@@ -1,8 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import bigInt from "big-integer";
+import { BinaryReader } from "telegram/extensions/BinaryReader.js";
 import { Api } from "telegram/tl/index.js";
 import { TelegramService } from "../telegram-client.js";
+import { CurrentApi, type CurrentInlineButton } from "../tl/current-schema.js";
 
 interface Internals {
   client: unknown;
@@ -52,18 +54,22 @@ function makeMessage(id: number, markup?: Api.TypeReplyMarkup): Api.Message {
   });
 }
 
-function callbackButton(text: string, data: Buffer, requiresPassword = false): Api.KeyboardButtonCallback {
-  return new Api.KeyboardButtonCallback({ text, data, requiresPassword });
-}
-
-function urlButton(text: string, url: string): Api.KeyboardButtonUrl {
-  return new Api.KeyboardButtonUrl({ text, url });
-}
-
-function inlineMarkup(buttons: Api.TypeKeyboardButton[][]): Api.ReplyInlineMarkup {
-  return new Api.ReplyInlineMarkup({
-    rows: buttons.map((row) => new Api.KeyboardButtonRow({ buttons: row })),
+function callbackButton(text: string, data: Buffer, requiresPassword = false): CurrentInlineButton {
+  return new CurrentApi.KeyboardInlineButton({
+    text,
+    type: new CurrentApi.InlineButtonTypeCallback({ data, requiresPassword }),
   });
+}
+
+function urlButton(text: string, url: string): CurrentInlineButton {
+  return new CurrentApi.KeyboardInlineButton({ text, type: new CurrentApi.InlineButtonTypeUrl({ url }) });
+}
+
+function inlineMarkup(buttons: CurrentInlineButton[][]): Api.ReplyInlineMarkup {
+  const markup = new Api.ReplyInlineMarkup({
+    rows: buttons.map((row) => new CurrentApi.KeyboardInlineButtonRow({ buttons: row })),
+  });
+  return new BinaryReader(markup.getBytes()).tgReadObject() as Api.ReplyInlineMarkup;
 }
 
 function callbackAnswer(): Api.messages.BotCallbackAnswer {
@@ -133,7 +139,11 @@ describe("TelegramService.pressButton", () => {
   it("rejects when reply markup is ReplyKeyboardMarkup (not inline)", async () => {
     const invocations: unknown[] = [];
     const markup = new Api.ReplyKeyboardMarkup({
-      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButton({ text: "x" })] })],
+      rows: [
+        new Api.KeyboardButtonRow({
+          buttons: [new CurrentApi.KeyboardButton({ text: "x", type: new CurrentApi.ButtonTypeDefault() })],
+        }),
+      ],
     });
     const msg = makeMessage(1, markup);
     const service = makeService(makeChannel(100), invocations, [msg], () => callbackAnswer());

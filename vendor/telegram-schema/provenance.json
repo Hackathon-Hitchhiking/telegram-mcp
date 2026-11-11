@@ -1,0 +1,16 @@
+{
+  "layer": 233,
+  "repository": "https://github.com/tdlib/td",
+  "commit": "c8828d50f5eac2fc7089ce1089d7ce9095c61b5e",
+  "sourcePath": "td/generate/scheme/telegram_api.tl",
+  "sourceUrl": "https://github.com/tdlib/td/blob/c8828d50f5eac2fc7089ce1089d7ce9095c61b5e/td/generate/scheme/telegram_api.tl",
+  "sha256": "89bf71464239646c233f0a2a3d77512c9be08e4a63eab362afba0b721f69a26d",
+  "license": "Boost Software License 1.0",
+  "licenseUrl": "https://github.com/tdlib/td/blob/c8828d50f5eac2fc7089ce1089d7ce9095c61b5e/LICENSE_1_0.txt",
+  "licenseSha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+  "gramjsPackage": "telegram",
+  "gramjsVersion": "2.26.22",
+  "originalLayer": 198,
+  "originalApiTlSha256": "60a9c56cec1607c262ea8b56bd627fc27f94dd80848c07923ad954b1e9c18f37",
+  "originalAllTlObjectsSha256": "3623d7a21feae1939a4e5e45b1a8d7bd31d665990d4fc0a2bea5d7bfbf6c8648"
+}

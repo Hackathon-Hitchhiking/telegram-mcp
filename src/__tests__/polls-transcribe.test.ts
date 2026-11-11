@@ -1,8 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import bigInt from "big-integer";
+import { BinaryReader } from "telegram/extensions/BinaryReader.js";
 import { Api } from "telegram/tl/index.js";
 import { extractPeerId, extractPollMediaFromUpdates, summarizePoll, TelegramService } from "../telegram-client.js";
+import { CurrentApi } from "../tl/current-schema.js";
 
 // ─── Mock helpers ─────────────────────────────────────────────────────────────
 
@@ -19,6 +21,7 @@ function makeService(
   getMessages?: (peer: unknown, opts: unknown) => unknown,
 ): TelegramService {
   const fakeClient = {
+    getInputEntity: async () => new Api.InputPeerSelf(),
     invoke: async (req: unknown) => {
       invocations.push(req);
       return invoke(req);
@@ -50,8 +53,9 @@ function makePoll(opts: {
         option: Buffer.from([i]),
       }),
   );
-  return new Api.Poll({
+  return new CurrentApi.Poll({
     id: bigInt(1),
+    hash: bigInt(987),
     question: new Api.TextWithEntities({ text: opts.question ?? "Test?", entities: [] }),
     answers,
     closed: opts.closed ?? false,
@@ -314,6 +318,9 @@ describe("TelegramService.closePoll", () => {
     ) as { className: string; media?: { poll?: Api.Poll } } | undefined;
     assert.ok(editInvocation, "EditMessage should be called");
     assert.strictEqual(editInvocation.media?.poll?.closed, true);
+    assert.ok(editInvocation.media?.poll);
+    assert.equal((editInvocation.media.poll as { hash: Api.long }).hash.toString(), "987");
+    assert.ok(editInvocation.media.poll.getBytes().length);
   });
 
   it("throws when message is not a poll", async () => {
@@ -456,7 +463,7 @@ describe("TelegramService.sendPaidReaction", () => {
     );
     await service.sendPaidReaction("@chat", 1, 3, { private: true });
     const req = invocations[0] as Record<string, unknown>;
-    assert.strictEqual(req.private, true);
+    assert.ok(req.private instanceof CurrentApi.PaidReactionPrivacyAnonymous);
   });
 
   it("sets private=false when explicitly public", async () => {
@@ -467,7 +474,7 @@ describe("TelegramService.sendPaidReaction", () => {
     );
     await service.sendPaidReaction("@chat", 1, 1, { private: false });
     const req = invocations[0] as Record<string, unknown>;
-    assert.strictEqual(req.private, false);
+    assert.ok(req.private instanceof CurrentApi.PaidReactionPrivacyDefault);
   });
 });
 
@@ -476,7 +483,7 @@ describe("TelegramService.sendPaidReaction", () => {
 describe("TelegramService.getPaidReactionPrivacy", () => {
   it("returns private=true from UpdatePaidReactionPrivacy", async () => {
     const invocations: unknown[] = [];
-    const update = new Api.UpdatePaidReactionPrivacy({ private: true });
+    const update = new CurrentApi.UpdatePaidReactionPrivacy({ private: new CurrentApi.PaidReactionPrivacyAnonymous() });
     const updates = new Api.Updates({
       updates: [update],
       users: [],
@@ -501,5 +508,67 @@ describe("TelegramService.getPaidReactionPrivacy", () => {
     const service = makeService(invocations, () => updates);
     const result = await service.getPaidReactionPrivacy();
     assert.strictEqual(result.private, false);
+  });
+});
+
+describe("layer 233 poll and privacy serialization", () => {
+  it("sends quiz answers as integer indexes with zero initial poll hash", async () => {
+    const calls: unknown[] = [];
+    const service = makeService(calls, () => new Api.Updates({ updates: [], users: [], chats: [], date: 0, seq: 0 }));
+    await service.createPoll("@chat", "Quiz?", ["A", "B"], { quiz: true, correctAnswer: 1 });
+    const request = calls[0] as Api.messages.SendMedia;
+    const decoded = new BinaryReader(request.getBytes()).tgReadObject();
+    assert.equal(decoded.media.poll.hash.toString(), "0");
+    assert.deepEqual(decoded.media.correctAnswers, [1]);
+  });
+
+  it("passes the server poll hash when refreshing results", async () => {
+    const poll = makePoll({});
+    const message = new Api.Message({
+      id: 3,
+      peerId: new Api.PeerUser({ userId: bigInt(1) }),
+      date: 0,
+      message: "",
+      media: new Api.MessageMediaPoll({ poll, results: makeResults([], 0) }),
+    });
+    const calls: unknown[] = [];
+    const service = makeService(
+      calls,
+      () => new Api.Updates({ updates: [], users: [], chats: [], date: 0, seq: 0 }),
+      () => [message],
+    );
+    await service.getPollResults("@chat", 3);
+    const request = calls[0] as InstanceType<typeof CurrentApi.messages.GetPollResults>;
+    request.peer = new Api.InputPeerSelf();
+    const decoded = new BinaryReader(request.getBytes()).tgReadObject();
+    assert.equal(decoded.pollHash.toString(), "987");
+  });
+
+  it("serializes both explicit paid reaction privacy choices", async () => {
+    for (const privateFlag of [false, true]) {
+      const calls: unknown[] = [];
+      const service = makeService(calls, () => true);
+      await service.togglePaidReactionPrivacy("@chat", 3, privateFlag);
+      const request = calls[0] as InstanceType<typeof CurrentApi.messages.TogglePaidReactionPrivacy>;
+      request.peer = new Api.InputPeerSelf();
+      const decoded = new BinaryReader(request.getBytes()).tgReadObject();
+      assert.equal(
+        decoded.private.className,
+        privateFlag ? "PaidReactionPrivacyAnonymous" : "PaidReactionPrivacyDefault",
+      );
+    }
+  });
+
+  it("treats default and peer privacy objects as public instead of truthy anonymous flags", async () => {
+    for (const privacy of [
+      new CurrentApi.PaidReactionPrivacyDefault(),
+      new CurrentApi.PaidReactionPrivacyPeer({ peer: new Api.InputPeerSelf() }),
+    ]) {
+      const update = new CurrentApi.UpdatePaidReactionPrivacy({ private: privacy });
+      const result = new BinaryReader(
+        new Api.Updates({ updates: [update], users: [], chats: [], date: 0, seq: 0 }).getBytes(),
+      ).tgReadObject();
+      assert.deepEqual(await makeService([], () => result).getPaidReactionPrivacy(), { private: false });
+    }
   });
 });

@@ -13,8 +13,31 @@ import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from "telegram/tl/index.js";
 import { getInputUser } from "telegram/Utils.js";
+import {
+  type AdvancedMessagesContext,
+  searchSentMedia as findSentMedia,
+  type HistoryPageOptions,
+  getHistoryPage as readHistoryPage,
+  getMessagesByIds as readMessagesByIds,
+  type SentMediaFilter,
+} from "./advanced-messages.js";
 import { secureSessionDir } from "./lock.js";
+import {
+  formattingEntities,
+  type MessageWriteOptions,
+  type TextFormattingOptions,
+  validateWriteOptions,
+} from "./message-options.js";
 import { FLOOD_WAIT_ERROR_PREFIX, RateLimiter } from "./rate-limiter.js";
+import {
+  type RichContext,
+  type RichOptions,
+  getRichMessage as readNativeRichMessage,
+  getRichCapabilities as readRichCapabilities,
+  readRichReceipt,
+  richPreview,
+  writeRichMessage as submitRichMessage,
+} from "./rich-messages.js";
 import type {
   AllStoriesSummary,
   BoostsListSummary,
@@ -88,6 +111,7 @@ import {
   summarizeUpdatesDifference,
   topicReplyOptions,
 } from "./telegram-helpers.js";
+import { CurrentApi, type CurrentPoll, invokeCurrent } from "./tl/current-schema.js";
 import type { SavedMusicResponse } from "./tl/saved-music.js";
 import { GetSavedMusicRequest } from "./tl/saved-music.js";
 import { type InstantViewSummary, summarizeInstantView } from "./webpage-preview.js";
@@ -349,7 +373,7 @@ function ensureSessionDir(filePath: string): void {
 /** Media descriptor in message lists; `title`/`text` are Instant View page content, not the author's text. */
 export type MessageMediaInfo = { type: string; fileName?: string; size?: number } & InstantViewSummary;
 
-/** Position in a forum topic list for channels.GetForumTopics */
+/** Position in a forum topic list for messages.GetForumTopics. */
 type ForumTopicsCursor = { offsetDate: number; offsetId: number; offsetTopic: number };
 /** Time for reading topics in one call; what is left is reported as remaining */
 const FORUM_READ_TIME_BUDGET_MS = 20_000;
@@ -843,43 +867,104 @@ export class TelegramService {
     };
   }
 
+  private richContext(): RichContext {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    return {
+      client: this.client as unknown as RichContext["client"],
+      resolvePeer: (chatId) => this.resolvePeer(chatId),
+      journalDirectory: join(this.sessionDir, "rich-message-operations"),
+      once: (fn) => this.rateLimiter.executeOnce(fn),
+    };
+  }
+
+  async getRichCapabilities() {
+    return readRichCapabilities(this.richContext());
+  }
+
+  async getRichMessage(chatId: string, messageId: number) {
+    return readNativeRichMessage(this.richContext(), chatId, messageId);
+  }
+
+  async getRichSendStatus(requestId: string) {
+    return readRichReceipt(join(this.sessionDir, "rich-message-operations"), requestId);
+  }
+
+  async writeRichMessage(
+    operation: "send" | "edit" | "draft",
+    chatId: string,
+    requestId: string,
+    markdown: string,
+    options?: RichOptions,
+    messageId?: number,
+  ) {
+    return submitRichMessage(this.richContext(), operation, chatId, requestId, markdown, options, messageId);
+  }
+
+  private advancedContext(): AdvancedMessagesContext {
+    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    return {
+      client: this.client as unknown as AdvancedMessagesContext["client"],
+      resolvePeer: (chatId) => this.resolvePeer(chatId),
+    };
+  }
+
+  async getMessagesByIds(chatId: string, messageIds: number[]) {
+    return this.rateLimiter.execute(() => readMessagesByIds(this.advancedContext(), chatId, messageIds));
+  }
+
+  async getHistoryPage(chatId: string, options: HistoryPageOptions) {
+    return this.rateLimiter.execute(() => readHistoryPage(this.advancedContext(), chatId, options));
+  }
+
+  async searchSentMedia(query: string, filter: SentMediaFilter, limit: number) {
+    return this.rateLimiter.execute(() => findSentMedia(this.advancedContext(), query, filter, limit));
+  }
+
   async sendMessage(
     chatId: string,
     text: string,
     replyTo?: number,
     parseMode?: "md" | "html",
     topicId?: number,
-    extra?: { quoteText?: string; effect?: string },
+    extra?: MessageWriteOptions,
   ): Promise<Api.Message | Api.UpdateShortSentMessage | undefined> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
+    if (parseMode && extra?.parseMode && parseMode !== extra.parseMode) {
+      throw new Error("Conflicting parseMode arguments.");
+    }
+    parseMode ??= extra?.parseMode;
+    if (extra) validateWriteOptions(extra, replyTo);
+    const explicitEntities = formattingEntities(text, extra?.entities, parseMode);
     // pi-lens-ignore: sql-injection
-    return this.rateLimiter.execute(async () => {
+    return this.rateLimiter.executeOnce(async () => {
       const resolved = await this.resolvePeer(chatId);
-      // Raw path: high-level client.sendMessage does not support quoteText/effect.
-      // Fall back to messages.SendMessage when either is requested.
-      if (extra?.quoteText || extra?.effect) {
+      // The raw request preserves fields unsupported by the high-level GramJS helper.
+      if (extra && Object.values(extra).some((value) => value !== undefined)) {
         if (extra.quoteText && !replyTo) {
           throw new Error("quoteText requires replyTo — provide the message ID of the message you are quoting");
         }
-        const replyToObj = extra.quoteText
-          ? new Api.InputReplyToMessage({
-              replyToMsgId: replyTo as number,
-              topMsgId: topicId,
-              quoteText: extra.quoteText,
-            })
-          : buildReplyTo(replyTo, topicId);
+        const replyToObj =
+          extra.quoteText || extra.quoteOffset !== undefined || extra.replyToPeer
+            ? new Api.InputReplyToMessage({
+                replyToMsgId: replyTo as number,
+                topMsgId: topicId,
+                quoteText: extra.quoteText,
+                quoteOffset: extra.quoteOffset,
+                ...(extra.replyToPeer
+                  ? { replyToPeerId: await client.getInputEntity(await this.resolvePeer(extra.replyToPeer)) }
+                  : {}),
+              })
+            : buildReplyTo(replyTo, topicId);
         // GramJS parses md/html via the internal `_parseMessageText` helper. We feature-detect
         // it so a future GramJS rename surfaces a clear error instead of silently sending plain.
         let parsedText = text;
-        let entities: Api.TypeMessageEntity[] | undefined;
+        let entities: Api.TypeMessageEntity[] | undefined = explicitEntities;
         if (parseMode) {
           // biome-ignore lint/suspicious/noExplicitAny: GramJS internal helper, no public typing
           const parser = (client as unknown as any)._parseMessageText;
           if (typeof parser !== "function") {
-            throw new Error(
-              "GramJS version incompatible: parseMode not supported in quoteText/effect code path. Omit parseMode or upgrade GramJS.",
-            );
+            throw new Error("Installed GramJS cannot parse formatting for extended message options.");
           }
           [parsedText, entities] = await parser.call(client, text, parseMode === "html" ? "html" : "md");
         }
@@ -891,6 +976,15 @@ export class TelegramService {
             ...(replyToObj ? { replyTo: replyToObj } : {}),
             ...(entities?.length ? { entities } : {}),
             ...(extra.effect ? { effect: bigInt(extra.effect) } : {}),
+            silent: extra.silent,
+            background: extra.background,
+            clearDraft: extra.clearDraft,
+            noforwards: extra.protectContent,
+            noWebpage: extra.noWebpage,
+            invertMedia: extra.invertMedia,
+            scheduleDate: extra.scheduleDate,
+            ...(extra.scheduleRepeatPeriod !== undefined ? { scheduleRepeatPeriod: extra.scheduleRepeatPeriod } : {}),
+            ...(extra.sendAs ? { sendAs: await client.getInputEntity(await this.resolvePeer(extra.sendAs)) } : {}),
           }),
         );
         const id = extractMessageId(result);
@@ -903,7 +997,7 @@ export class TelegramService {
         ...topicReplyOptions(replyTo, topicId),
         ...(parseMode ? { parseMode: parseMode === "html" ? "html" : "md" } : {}),
       });
-    }, `sendMessage to ${chatId}`);
+    });
   }
 
   /**
@@ -1588,9 +1682,10 @@ export class TelegramService {
     const out: Array<{ id: number; topMessage: number; unreadCount: number }> = [];
     let cursor: ForumTopicsCursor = from ?? { offsetDate: 0, offsetId: 0, offsetTopic: 0 };
     for (let page = 0; page < FORUM_READ_MAX_PAGES; page++) {
-      const result = await this.client.invoke(
-        new Api.channels.GetForumTopics({
-          channel,
+      const result = await invokeCurrent(
+        this.client,
+        new CurrentApi.messages.GetForumTopics({
+          peer: channel,
           limit: pageSize,
           offsetDate: cursor.offsetDate,
           offsetId: cursor.offsetId,
@@ -1650,13 +1745,45 @@ export class TelegramService {
     await this.client.forwardMessages(resolvedTo, { messages: messageIds, fromPeer: resolvedFrom });
   }
 
-  async editMessage(chatId: string, messageId: number, newText: string): Promise<void> {
+  async editMessage(
+    chatId: string,
+    messageId: number,
+    newText: string,
+    options?: TextFormattingOptions,
+  ): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     // pi-lens-ignore: sql-injection
-    await this.rateLimiter.execute(async () => {
+    const entities = formattingEntities(newText, options?.entities, options?.parseMode);
+    await this.rateLimiter.executeOnce(async () => {
       const resolved = await this.resolvePeer(chatId);
-      await this.client?.editMessage(resolved, { message: messageId, text: newText });
-    }, `editMessage ${messageId} in ${chatId}`);
+      const client = this.client;
+      if (!client) throw new Error(NOT_CONNECTED_ERROR);
+      if (!options || !Object.values(options).some((value) => value !== undefined)) {
+        await client.editMessage(resolved, { message: messageId, text: newText });
+        return;
+      }
+      let parsed = newText;
+      let formatting = entities;
+      if (options.parseMode) {
+        const parser = (
+          client as unknown as {
+            _parseMessageText?: (text: string, mode: string) => Promise<[string, Api.TypeMessageEntity[]]>;
+          }
+        )._parseMessageText;
+        if (!parser) throw new Error("Installed GramJS cannot parse message formatting.");
+        [parsed, formatting] = await parser.call(client, newText, options.parseMode);
+      }
+      await client.invoke(
+        new Api.messages.EditMessage({
+          peer: await client.getInputEntity(resolved),
+          id: messageId,
+          message: parsed,
+          entities: formatting,
+          noWebpage: options.noWebpage,
+          ...(options.invertMedia !== undefined ? { invertMedia: options.invertMedia } : {}),
+        }),
+      );
+    });
   }
 
   async deleteMessages(chatId: string, messageIds: number[]): Promise<void> {
@@ -2176,6 +2303,7 @@ export class TelegramService {
       date: string;
       media?: MessageMediaInfo;
       reactions?: { emoji: string; count: number; me: boolean }[];
+      richMessage?: import("./rich-messages.js").RichPreview;
     }>
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
@@ -2198,6 +2326,7 @@ export class TelegramService {
         date: new Date((m.date ?? 0) * 1000).toISOString(),
         media: this.extractMediaInfo(m.media),
         reactions: this.extractReactions(m.reactions),
+        richMessage: richPreview(m),
       })),
     );
     return results;
@@ -2295,6 +2424,7 @@ export class TelegramService {
       chat: { id: string; name: string; type: string; username?: string };
       media?: MessageMediaInfo;
       reactions?: { emoji: string; count: number; me: boolean }[];
+      richMessage?: import("./rich-messages.js").RichPreview;
     }>
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
@@ -2362,6 +2492,7 @@ export class TelegramService {
           chat: chatsMap.get(chatId) || { id: chatId, name: "Unknown", type: "unknown" },
           media: this.extractMediaInfo(m.media),
           reactions: this.extractReactions(m.reactions),
+          richMessage: richPreview(m),
         };
       }),
     );
@@ -2382,6 +2513,7 @@ export class TelegramService {
       date: string;
       media?: MessageMediaInfo;
       reactions?: { emoji: string; count: number; me: boolean }[];
+      richMessage?: import("./rich-messages.js").RichPreview;
     }>
   > {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
@@ -2403,6 +2535,7 @@ export class TelegramService {
         date: new Date((m.date ?? 0) * 1000).toISOString(),
         media: this.extractMediaInfo(m.media),
         reactions: this.extractReactions(m.reactions),
+        richMessage: richPreview(m),
       })),
     );
     return results;
@@ -2914,8 +3047,9 @@ export class TelegramService {
           option: Buffer.from([i]),
         }),
     );
-    const poll = new Api.Poll({
+    const poll = new CurrentApi.Poll({
       id: bigInt(Date.now()),
+      hash: bigInt.zero,
       question: new Api.TextWithEntities({ text: question, entities: [] }),
       answers: pollAnswers,
       multipleChoice: options?.multipleChoice ?? false,
@@ -2924,11 +3058,9 @@ export class TelegramService {
     const result = await this.client.invoke(
       new Api.messages.SendMedia({
         peer,
-        media: new Api.InputMediaPoll({
+        media: new CurrentApi.InputMediaPoll({
           poll,
-          ...(options?.quiz && options.correctAnswer != null
-            ? { correctAnswers: [Buffer.from([options.correctAnswer])] }
-            : {}),
+          ...(options?.quiz && options.correctAnswer != null ? { correctAnswers: [options.correctAnswer] } : {}),
         }),
         message: "",
         randomId: bigInt(Math.floor(Math.random() * 1e15)),
@@ -2984,7 +3116,14 @@ export class TelegramService {
       const pollMedia = msgs[0].media as Api.MessageMediaPoll;
       // Refresh results from server
       try {
-        await client.invoke(new Api.messages.GetPollResults({ peer, msgId: messageId }));
+        await invokeCurrent(
+          client,
+          new CurrentApi.messages.GetPollResults({
+            peer,
+            msgId: messageId,
+            pollHash: (pollMedia.poll as CurrentPoll).hash,
+          }),
+        );
       } catch {
         // ignore — use whatever is in the message
       }
@@ -3061,11 +3200,13 @@ export class TelegramService {
         throw new Error("Message is not a poll");
       }
       const pollMedia = msgs[0].media as Api.MessageMediaPoll;
-      const originalPoll = pollMedia.poll as Api.Poll;
+      const originalPoll = pollMedia.poll as CurrentPoll;
 
       // Step 2: build closed poll (preserve all flags)
-      const closedPoll = new Api.Poll({
+      const closedPoll = new CurrentApi.Poll({
+        ...originalPoll,
         id: originalPoll.id,
+        hash: originalPoll.hash,
         question: originalPoll.question,
         answers: originalPoll.answers,
         closed: true,
@@ -3198,10 +3339,21 @@ export class TelegramService {
     const client = this.client;
     return this.rateLimiter.execute(async () => {
       const randomId = generateRandomBigInt();
-      const params: Record<string, unknown> = { peer, msgId: messageId, count, randomId };
-      if (opts?.private !== undefined) params.private = opts.private;
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic params for optional `private` field
-      await client.invoke(new Api.messages.SendPaidReaction(params as any));
+      await invokeCurrent(
+        client,
+        new CurrentApi.messages.SendPaidReaction({
+          peer,
+          msgId: messageId,
+          count,
+          randomId,
+          private:
+            opts?.private === undefined
+              ? undefined
+              : opts.private
+                ? new CurrentApi.PaidReactionPrivacyAnonymous()
+                : new CurrentApi.PaidReactionPrivacyDefault(),
+        }),
+      );
       return { count };
     }, `sendPaidReaction ${chatId}/${messageId}`);
   }
@@ -3211,7 +3363,16 @@ export class TelegramService {
     const peer = await this.resolvePeer(chatId);
     const client = this.client;
     await this.rateLimiter.execute(async () => {
-      await client.invoke(new Api.messages.TogglePaidReactionPrivacy({ peer, msgId: messageId, private: privateFlag }));
+      await invokeCurrent(
+        client,
+        new CurrentApi.messages.TogglePaidReactionPrivacy({
+          peer,
+          msgId: messageId,
+          private: privateFlag
+            ? new CurrentApi.PaidReactionPrivacyAnonymous()
+            : new CurrentApi.PaidReactionPrivacyDefault(),
+        }),
+      );
     }, `togglePaidReactionPrivacy ${chatId}/${messageId}`);
   }
 
@@ -3227,8 +3388,8 @@ export class TelegramService {
         list = [result.update];
       }
       for (const u of list) {
-        if (u instanceof Api.UpdatePaidReactionPrivacy) {
-          return { private: Boolean(u.private) };
+        if (u instanceof CurrentApi.UpdatePaidReactionPrivacy) {
+          return { private: u.private instanceof CurrentApi.PaidReactionPrivacyAnonymous };
         }
       }
       return { private: false };
@@ -3252,9 +3413,10 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const entity = await this.resolveChat(chatId);
     if (!(entity instanceof Api.Channel)) throw new Error("Forum topics are only available in supergroups");
-    const result = await this.client.invoke(
-      new Api.channels.GetForumTopics({
-        channel: entity,
+    const result = await invokeCurrent(
+      this.client,
+      new CurrentApi.messages.GetForumTopics({
+        peer: entity,
         limit,
         offsetTopic: 0,
         offsetDate: 0,
@@ -3910,8 +4072,13 @@ export class TelegramService {
     }, `toggleAntiSpam ${chatId}`);
   }
 
-  async toggleForumMode(chatId: string, enabled: boolean): Promise<void> {
+  async toggleForumMode(
+    chatId: string,
+    enabled: boolean,
+    options?: { tabs?: boolean; sidebar?: boolean },
+  ): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
     return this.rateLimiter.execute(async () => {
       const entity = await this.resolveChat(chatId);
       if (!(entity instanceof Api.Channel)) {
@@ -3920,7 +4087,15 @@ export class TelegramService {
       if (!entity.megagroup) {
         throw new Error("Forum mode is only available for supergroups, not broadcast channels");
       }
-      await this.client?.invoke(new Api.channels.ToggleForum({ channel: entity, enabled }));
+      await invokeCurrent(
+        client,
+        new CurrentApi.channels.ToggleForum({
+          channel: entity,
+          enabled,
+          tabs: options?.tabs ?? false,
+          sidebar: options?.sidebar ?? false,
+        }),
+      );
     }, `toggleForumMode ${chatId}`);
   }
 
@@ -4107,17 +4282,20 @@ export class TelegramService {
         if (!button) {
           throw new Error(`Column ${column} out of bounds in row ${row} (row has ${rowEntry.buttons.length} buttons)`);
         }
-        if (!(button instanceof Api.KeyboardButtonCallback)) {
+        if (
+          !(button instanceof CurrentApi.KeyboardInlineButton) ||
+          !(button.type instanceof CurrentApi.InlineButtonTypeCallback)
+        ) {
           throw new Error(
             `Button at (${row},${column}) is ${button.className}, not callable — use the appropriate tool for URL/switch-inline/game buttons`,
           );
         }
-        if (button.requiresPassword) {
+        if (button.type.requiresPassword) {
           throw new Error(
             `Button at (${row},${column}) requires 2FA password confirmation — not supported by telegram-press-button`,
           );
         }
-        data = Buffer.from(button.data as Uint8Array);
+        data = Buffer.from(button.type.data);
       } else if (options.data !== undefined) {
         data = Buffer.from(options.data, "base64");
       } else {
@@ -4335,15 +4513,17 @@ export class TelegramService {
     iconEmojiId?: string,
   ): Promise<{ id: number; title: string }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
     return this.rateLimiter.execute(async () => {
       const entity = await this.resolveChat(chatId);
       if (!(entity instanceof Api.Channel) || !entity.forum) {
         throw new Error("Forum topics are only available in forum supergroups");
       }
       const randomId = bigInt(Math.floor(Math.random() * 1e15));
-      const result = await this.client?.invoke(
-        new Api.channels.CreateForumTopic({
-          channel: entity,
+      const result = await invokeCurrent(
+        client,
+        new CurrentApi.messages.CreateForumTopic({
+          peer: entity,
           title,
           iconColor,
           iconEmojiId: iconEmojiId ? bigInt(iconEmojiId) : undefined,
@@ -4384,14 +4564,16 @@ export class TelegramService {
     options: { title?: string; iconEmojiId?: string; closed?: boolean; hidden?: boolean },
   ): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
     return this.rateLimiter.execute(async () => {
       const entity = await this.resolveChat(chatId);
       if (!(entity instanceof Api.Channel) || !entity.forum) {
         throw new Error("Forum topics are only available in forum supergroups");
       }
-      await this.client?.invoke(
-        new Api.channels.EditForumTopic({
-          channel: entity,
+      await invokeCurrent(
+        client,
+        new CurrentApi.messages.EditForumTopic({
+          peer: entity,
           topicId,
           title: options.title,
           iconEmojiId: options.iconEmojiId ? bigInt(options.iconEmojiId) : undefined,
@@ -4404,14 +4586,16 @@ export class TelegramService {
 
   async deleteForumTopic(chatId: string, topicId: number): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    const client = this.client;
     return this.rateLimiter.execute(async () => {
       const entity = await this.resolveChat(chatId);
       if (!(entity instanceof Api.Channel) || !entity.forum) {
         throw new Error("Forum topics are only available in forum supergroups");
       }
-      await this.client?.invoke(
-        new Api.channels.DeleteTopicHistory({
-          channel: entity,
+      await invokeCurrent(
+        client,
+        new CurrentApi.messages.DeleteTopicHistory({
+          peer: entity,
           topMsgId: topicId,
         }),
       );
@@ -4983,9 +5167,21 @@ export class TelegramService {
 
   // ─── Drafts & saved dialogs ────────────────────────────────────────────────
 
-  async saveDraft(chatId: string, text: string, replyTo?: number): Promise<void> {
+  async saveDraft(chatId: string, text: string, replyTo?: number, options?: TextFormattingOptions): Promise<void> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
-    await this.rateLimiter.execute(async () => {
+    let entities = formattingEntities(text, options?.entities, options?.parseMode);
+    let parsed = text;
+    const client = this.client;
+    if (options?.parseMode) {
+      const parser = (
+        client as unknown as {
+          _parseMessageText?: (text: string, mode: string) => Promise<[string, Api.TypeMessageEntity[]]>;
+        }
+      )._parseMessageText;
+      if (!parser) throw new Error("Installed GramJS cannot parse draft formatting.");
+      [parsed, entities] = await parser.call(client, text, options.parseMode);
+    }
+    await this.rateLimiter.executeOnce(async () => {
       const resolved = await this.resolvePeer(chatId);
       const peer = await this.client?.getInputEntity(resolved);
       if (!peer) throw new Error(`Cannot resolve peer for ${chatId}`);
@@ -4993,11 +5189,14 @@ export class TelegramService {
       await this.client?.invoke(
         new Api.messages.SaveDraft({
           peer,
-          message: text,
+          message: parsed,
+          entities,
+          noWebpage: options?.noWebpage,
+          ...(options?.invertMedia !== undefined ? { invertMedia: options.invertMedia } : {}),
           ...(effectiveReplyTo ? { replyTo: new Api.InputReplyToMessage({ replyToMsgId: effectiveReplyTo }) } : {}),
         }),
       );
-    }, `saveDraft in ${chatId}`);
+    });
   }
 
   async getAllDrafts(): Promise<
@@ -5371,11 +5570,14 @@ export class TelegramService {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
     const client = this.client;
     return this.rateLimiter.execute(async () => {
-      await client.invoke(
-        new Api.account.UpdateColor({
+      await invokeCurrent(
+        client,
+        new CurrentApi.account.UpdateColor({
           forProfile: opts.forProfile || undefined,
-          color: opts.color,
-          backgroundEmojiId: opts.backgroundEmojiId ? bigInt(opts.backgroundEmojiId) : undefined,
+          color: new Api.PeerColor({
+            color: opts.color,
+            backgroundEmojiId: opts.backgroundEmojiId ? bigInt(opts.backgroundEmojiId) : undefined,
+          }),
         }),
       );
     }, "setProfileColor");
@@ -5943,6 +6145,9 @@ export class TelegramService {
     }>;
   }> {
     if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
+    if (opts.excludeLimited === true) {
+      throw new Error("excludeLimited is unsupported by Telegram API layer 233; omit it or set it to false");
+    }
     const client = this.client;
     const peer = await this.resolvePeer(chatId);
     const resolved = await client.getInputEntity(peer);
@@ -5954,7 +6159,6 @@ export class TelegramService {
         excludeUnsaved: opts.excludeUnsaved,
         excludeSaved: opts.excludeSaved,
         excludeUnlimited: opts.excludeUnlimited,
-        excludeLimited: opts.excludeLimited,
         excludeUnique: opts.excludeUnique,
         sortByValue: opts.sortByValue,
       }),

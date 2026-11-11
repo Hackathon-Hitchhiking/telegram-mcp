@@ -634,6 +634,8 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
       inputSchema: {
         chatId: z.string().describe("Supergroup ID or username"),
         enabled: z.boolean().describe("true to enable forum mode, false to disable"),
+        tabs: z.boolean().optional().describe("Use the tabbed forum UI; false (default) uses the list-based UI"),
+        sidebar: z.boolean().optional().describe("Native Telegram forum sidebar flag; defaults to false"),
         confirm: z
           .boolean()
           .optional()
@@ -641,7 +643,7 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
       },
       annotations: DESTRUCTIVE,
     },
-    async ({ chatId, enabled, confirm }) => {
+    async ({ chatId, enabled, confirm, tabs, sidebar }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
@@ -654,7 +656,7 @@ export function registerChatTools(server: McpServer, telegram: TelegramService) 
       }
 
       try {
-        await telegram.toggleForumMode(chatId, enabled);
+        await telegram.toggleForumMode(chatId, enabled, { tabs, sidebar });
         return ok(`${enabled ? "Enabled" : "Disabled"} forum mode in ${chatId}`);
       } catch (e) {
         return fail(e);

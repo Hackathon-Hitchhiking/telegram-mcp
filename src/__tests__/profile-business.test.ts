@@ -296,9 +296,10 @@ describe("TelegramService.setProfileColor", () => {
     } as unknown as import("../../src/rate-limiter.js").RateLimiter;
 
     await svc.setProfileColor({ forProfile: true, color: 3, backgroundEmojiId: "5213928135363049200" });
-    const req = invoked[0] as Api.account.UpdateColor;
-    assert.strictEqual(req.color, 3);
-    assert.strictEqual(req.backgroundEmojiId?.toString(), "5213928135363049200");
+    const req = invoked[0] as { forProfile?: boolean; color: Api.PeerColor };
+    assert.ok(req.color instanceof Api.PeerColor);
+    assert.strictEqual(req.color.color, 3);
+    assert.strictEqual(req.color.backgroundEmojiId?.toString(), "5213928135363049200");
   });
 });
 

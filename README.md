@@ -425,6 +425,18 @@ npm run lint:fix   # Auto-fix lint issues
 npm run format     # Format code with Biome
 ```
 
+## Local Rich Messages and API extension
+
+This checkout adds 12 tools to upstream 1.45.1, for **194 registered tools**. The local extension uses a pinned official Telegram layer-233 schema with the existing GramJS client. Install/build applies the schema before importing Telegram; run `npm run schema:check` to verify it. See [schema provenance and update procedure](vendor/telegram-schema/README.md).
+
+Use `telegram-preview-rich-message` to compile Markdown tables locally, then `telegram-rich-message-capabilities` to check the account and server. `telegram-send-rich-message`, `telegram-edit-rich-message` and `telegram-save-rich-draft` use native rich blocks, with no automatic text fallback. Ordinary `parseMode: "md"` formats text; it is not the native table path. Server eligibility is normally Premium, with chat permissions checked by Telegram.
+
+Each rich write requires a UUID v4 `requestId` reserved on disk before submission. Repeating the same ID/payload returns its recorded state; a changed payload is rejected. After a timeout, inspect `telegram-get-rich-send-status` and the exact message with `telegram-get-rich-message`. An uncertain write is never automatically replayed; a new ID must not be used to blindly resend. Immediate accepted sends/edits attempt content readback; scheduled acknowledgements do not establish delivery. Preserve the `rich-message-operations` journal beside the session file.
+
+The extension also adds exact ID reads, native history pagination and recent sent-media search. `telegram-api-search` and `telegram-api-describe` expose bounded installed-schema documentation; they do not execute arbitrary methods or make every protocol method callable. Ordinary send/edit/draft tools now support explicit UTF-16 formatting entities and preview options, with additional send flags, quotes and scheduling fields. See the [complete tool reference and limitations](docs/tools/reference.md#native-rich-messages-local-extension).
+
+Offline tests verify serialization, request deduplication and mocked readback. They do not establish live account eligibility or delivery.
+
 ## Project Structure
 
 ```

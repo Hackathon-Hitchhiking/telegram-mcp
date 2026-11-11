@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import bigInt from "big-integer";
 import { Api } from "telegram/tl/index.js";
 import { TelegramService } from "../telegram-client.js";
+import { CurrentApi } from "../tl/current-schema.js";
 
 interface Internals {
   client: unknown;
@@ -85,7 +86,7 @@ function makeService(opts: {
       return true;
     },
     invoke: async (req: unknown) => {
-      if (req instanceof Api.channels.GetForumTopics) {
+      if (req instanceof CurrentApi.messages.GetForumTopics) {
         calls.push({
           kind: "getTopics",
           detail: { offsetTopic: req.offsetTopic, offsetId: req.offsetId, offsetDate: req.offsetDate },

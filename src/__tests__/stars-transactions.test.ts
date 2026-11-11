@@ -11,6 +11,7 @@ interface Internals {
 
 function makeService(invocations: unknown[], responder: (req: unknown) => unknown): TelegramService {
   const fakeClient = {
+    getInputEntity: async () => new Api.InputPeerSelf(),
     invoke: async (req: unknown) => {
       invocations.push(req);
       return responder(req);
@@ -34,7 +35,7 @@ describe("TelegramService.getStarsTransactions", () => {
           history: [
             new Api.StarsTransaction({
               id: "tx-A",
-              stars: new Api.StarsAmount({ amount: bigInt(25), nanos: 0 }),
+              amount: new Api.StarsAmount({ amount: bigInt(25), nanos: 0 }),
               date: 1710000000,
               peer: new Api.StarsTransactionPeerAppStore(),
             }),
@@ -102,5 +103,36 @@ describe("TelegramService.getStarsTransactions", () => {
   it("throws when not connected", async () => {
     const service = new TelegramService(1, "hash");
     await assert.rejects(() => service.getStarsTransactions("me"), /Not connected/i);
+  });
+});
+
+describe("layer 233 saved gift filters", () => {
+  it("rejects removed excludeLimited=true before any Telegram invocation", async () => {
+    const calls: unknown[] = [];
+    const service = makeService(calls, () => {
+      throw new Error("unexpected invocation");
+    });
+    await assert.rejects(
+      service.getSavedStarGifts("me", { excludeLimited: true }),
+      /excludeLimited is unsupported.*233/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  it("accepts excludeLimited=false while forwarding supported filters", async () => {
+    const calls: unknown[] = [];
+    const service = makeService(
+      calls,
+      () => new Api.payments.SavedStarGifts({ count: 0, gifts: [], chats: [], users: [] }),
+    );
+    assert.deepEqual(await service.getSavedStarGifts("@chat", { excludeLimited: false, excludeUnlimited: true }), {
+      count: 0,
+      nextOffset: undefined,
+      gifts: [],
+    });
+    const request = calls[0] as Api.payments.GetSavedStarGifts;
+    assert.equal(request.excludeUnlimited, true);
+    assert.equal("excludeLimited" in request, false);
+    assert.ok(request.getBytes().length);
   });
 });

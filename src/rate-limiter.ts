@@ -46,6 +46,12 @@ export class RateLimiter {
     return this.executeWithRetry(fn, context, 0, options);
   }
 
+  /** Rate-limit a potentially uncertain write without replaying it after a timeout. */
+  async executeOnce<T>(fn: () => Promise<T>): Promise<T> {
+    await this.waitForSlot();
+    return fn();
+  }
+
   private async executeWithRetry<T>(
     fn: () => Promise<T>,
     context: string,

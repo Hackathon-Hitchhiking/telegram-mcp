@@ -1,8 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import bigInt from "big-integer";
+import { BinaryReader } from "telegram/extensions/BinaryReader.js";
 import { Api } from "telegram/tl/index.js";
 import { TelegramService } from "../telegram-client.js";
+import { CurrentApi } from "../tl/current-schema.js";
 
 function makeService(entity: unknown, invocations: unknown[]): TelegramService {
   const fakeClient = {
@@ -38,9 +40,22 @@ describe("TelegramService.toggleForumMode", () => {
 
     await service.toggleForumMode("12345", true);
 
-    const call = invocations.find((r) => r instanceof Api.channels.ToggleForum) as Api.channels.ToggleForum | undefined;
+    const call = invocations.find((r) => r instanceof CurrentApi.channels.ToggleForum) as
+      | InstanceType<typeof CurrentApi.channels.ToggleForum>
+      | undefined;
     assert.ok(call, "ToggleForum was invoked");
     assert.strictEqual(call.enabled, true);
+    assert.strictEqual(call.tabs, false);
+    assert.strictEqual(call.sidebar, false);
+    call.channel = new Api.InputChannel({ channelId: bigInt(12345), accessHash: bigInt(1) });
+    const decoded = new BinaryReader(call.getBytes()).tgReadObject();
+    assert.strictEqual(decoded.tabs, false);
+    assert.strictEqual(decoded.sidebar, false);
+
+    await service.toggleForumMode("12345", true, { tabs: true, sidebar: true });
+    const custom = invocations[1] as InstanceType<typeof CurrentApi.channels.ToggleForum>;
+    assert.strictEqual(custom.tabs, true);
+    assert.strictEqual(custom.sidebar, true);
   });
 
   it("invokes channels.ToggleForum with enabled=false", async () => {
@@ -57,7 +72,9 @@ describe("TelegramService.toggleForumMode", () => {
 
     await service.toggleForumMode("22222", false);
 
-    const call = invocations.find((r) => r instanceof Api.channels.ToggleForum) as Api.channels.ToggleForum | undefined;
+    const call = invocations.find((r) => r instanceof CurrentApi.channels.ToggleForum) as
+      | InstanceType<typeof CurrentApi.channels.ToggleForum>
+      | undefined;
     assert.ok(call);
     assert.strictEqual(call.enabled, false);
   });
@@ -76,7 +93,7 @@ describe("TelegramService.toggleForumMode", () => {
 
     await assert.rejects(service.toggleForumMode("33333", true), /supergroups, not broadcast channels/);
     assert.strictEqual(
-      invocations.find((r) => r instanceof Api.channels.ToggleForum),
+      invocations.find((r) => r instanceof CurrentApi.channels.ToggleForum),
       undefined,
       "no API call on invalid target",
     );

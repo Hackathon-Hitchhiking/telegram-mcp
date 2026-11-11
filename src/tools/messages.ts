@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { messageWriteFields, textFormattingFields } from "../message-options.js";
+import type { RichPreview } from "../rich-messages.js";
 import type { TelegramService } from "../telegram-client.js";
 import {
   checkMessageLength,
@@ -16,6 +18,11 @@ import {
   sanitizeInputText,
   WRITE,
 } from "./shared.js";
+
+function formatRich(preview?: RichPreview): string {
+  if (!preview) return "";
+  return `\n  Native Rich Message (${preview.tableCount} tables${preview.partial ? ", partial" : ""}${preview.truncated ? ", preview truncated" : ""}): ${messageText(preview.text)}`;
+}
 
 /** Curated text for a bot callback answer (messages.GetBotCallbackAnswer).
  * Replaces a raw JSON dump of {alert,hasUrl,nativeUi,message,url,cacheTime}. */
@@ -45,6 +52,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         text: z.string().transform(sanitizeInputText).describe("Message text"),
         replyTo: z.number().optional().describe("Message ID to reply to"),
         parseMode: z.enum(["md", "html"]).optional().describe("Message format: md (Markdown) or html"),
+        ...messageWriteFields,
         topicId: z.number().optional().describe("Forum topic ID to send message into (for groups with Topics enabled)"),
         quoteText: z
           .string()
@@ -64,7 +72,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       },
       annotations: WRITE,
     },
-    async ({ chatId, text, replyTo, parseMode, topicId, quoteText, effect }) => {
+    async ({ chatId, text, replyTo, parseMode, topicId, quoteText, effect, ...options }) => {
       const tooLong = checkMessageLength(text, parseMode);
       if (tooLong) return fail(new Error(tooLong));
 
@@ -72,7 +80,8 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
       if (err) return fail(new Error(err));
 
       try {
-        const extra = quoteText || effect ? { quoteText, effect } : undefined;
+        const allOptions = { ...options, quoteText, effect };
+        const extra = Object.values(allOptions).some((value) => value !== undefined) ? allOptions : undefined;
         const result = await telegram.sendMessage(chatId, text, replyTo, parseMode, topicId, extra);
         const dest = topicId ? `topic ${topicId} in ${chatId}` : chatId;
         const messageId = result?.id;
@@ -106,7 +115,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         const text = messages
           .map(
             (m) =>
-              `[#${m.id}] [${m.date}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}`,
+              `[#${m.id}] [${m.date}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}${formatRich(m.richMessage)}`,
           )
           .join("\n\n");
         return ok(text || "No messages");
@@ -138,7 +147,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         const text = messages
           .map(
             (m) =>
-              `[#${m.id}] [${m.date}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}`,
+              `[#${m.id}] [${m.date}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}${formatRich(m.richMessage)}`,
           )
           .join("\n\n");
         return ok(text || "No messages found");
@@ -169,7 +178,7 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         const text = messages
           .map(
             (m) =>
-              `[#${m.id}] [${m.date}] [${m.chat.type === "channel" ? "C" : m.chat.type === "group" ? "G" : "P"} ${oneLine(m.chat.name)}${m.chat.username ? ` @${m.chat.username}` : ""}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}`,
+              `[#${m.id}] [${m.date}] [${m.chat.type === "channel" ? "C" : m.chat.type === "group" ? "G" : "P"} ${oneLine(m.chat.name)}${m.chat.username ? ` @${m.chat.username}` : ""}] ${oneLine(m.sender)}: ${messageText(m.text)}${formatMedia(m.media)}${formatReactions(m.reactions)}${formatRich(m.richMessage)}`,
           )
           .join("\n\n");
         return ok(text || "No messages found");
@@ -187,20 +196,23 @@ export function registerMessageTools(server: McpServer, telegram: TelegramServic
         chatId: z.string().describe("Chat ID or username"),
         messageId: z.number().describe("ID of the message to edit"),
         text: z.string().describe("New message text"),
+        parseMode: z.enum(["md", "html"]).optional(),
+        ...textFormattingFields,
       },
       annotations: WRITE,
     },
-    async ({ chatId, messageId, text }) => {
+    async ({ chatId, messageId, text, ...options }) => {
       // telegram-edit-message takes no parseMode, so the text is sent verbatim and its raw
       // length is exactly what Telegram measures.
-      const tooLong = checkMessageLength(text);
+      const tooLong = checkMessageLength(text, options.parseMode);
       if (tooLong) return fail(new Error(tooLong));
 
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        await telegram.editMessage(chatId, messageId, text);
+        const hasOptions = Object.values(options).some((value) => value !== undefined);
+        await telegram.editMessage(chatId, messageId, text, ...(hasOptions ? [options] : []));
         return ok(`Message ${messageId} edited in ${chatId}`);
       } catch (e) {
         return fail(e);

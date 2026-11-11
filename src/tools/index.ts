@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { TelegramService } from "../telegram-client.js";
 import { registerAccountTools } from "./account.js";
+import { registerAdvancedMessageTools } from "./advanced-messages.js";
+import { registerApiCatalogTools } from "./api-catalog.js";
 import { registerAuthTools } from "./auth.js";
 import { registerBoostTools } from "./boosts.js";
 import { registerBusinessTools } from "./business.js";
@@ -15,6 +17,7 @@ import { registerMessageTools } from "./messages.js";
 import { registerMusicTools } from "./music.js";
 import { registerQuickRepliesTools } from "./quick-replies.js";
 import { registerReactionTools } from "./reactions.js";
+import { registerRichMessageTools } from "./rich-messages.js";
 import { registerSendMediaTools } from "./send-media.js";
 import { registerStarsTools } from "./stars.js";
 import { registerStickerTools } from "./stickers.js";
@@ -24,6 +27,9 @@ import { registerTranscribeTools } from "./transcribe.js";
 export function registerTools(server: McpServer, telegram: TelegramService) {
   registerAuthTools(server, telegram);
   registerMessageTools(server, telegram);
+  registerRichMessageTools(server, telegram);
+  registerAdvancedMessageTools(server, telegram);
+  registerApiCatalogTools(server);
   registerChatTools(server, telegram);
   registerMediaTools(server, telegram);
   registerSendMediaTools(server, telegram);

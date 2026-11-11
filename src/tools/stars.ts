@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
+import type { StarsAmountSummary } from "../telegram-helpers.js";
 import { fail, ok, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
 
 export function isStarsEnabled(): boolean {
@@ -14,8 +15,9 @@ function formatStarsDate(unixSeconds: number): string {
 }
 
 /** Compact "123⭐" / "123.5⭐" — drops the nanos fraction when zero (1e9 nanos = 1 Star). */
-function formatStarsAmount(a: { amount: string; nanos: number } | undefined): string {
+function formatStarsAmount(a: StarsAmountSummary | undefined): string {
   if (!a) return "0⭐";
+  if (a.unit === "nanoton") return `${a.amount} nanoton`;
   if (!a.nanos) return `${a.amount}⭐`;
   const frac = String(a.nanos).padStart(9, "0").replace(/0+$/, "");
   return `${a.amount}.${frac}⭐`;
@@ -30,7 +32,7 @@ function formatStarsPeer(peer: { kind: string; peer?: { kind: string; id: string
 
 interface StarsTxn {
   id: string;
-  stars: { amount: string; nanos: number };
+  stars: StarsAmountSummary;
   date: number;
   peer: { kind: string };
   refund?: boolean;
@@ -57,7 +59,7 @@ function renderStarsTxn(t: StarsTxn): string {
 /** Curated text for the shared StarsStatusSummary shape (status + transactions).
  * Replaces a raw JSON.stringify dump — same data, ~50-70% fewer tokens. */
 function renderStarsStatus(r: {
-  balance?: { amount: string; nanos: number };
+  balance?: StarsAmountSummary;
   history?: StarsTxn[];
   nextOffset?: string;
   subscriptionsMissingBalance?: string;
@@ -80,7 +82,7 @@ export function registerStarsTools(server: McpServer, telegram: TelegramService)
     "telegram-get-stars-status",
     {
       description:
-        "Fetch the current Telegram Stars balance and recent activity for a peer (payments.GetStarsStatus). Pass 'me' / '@me' (or the user's own id) to inspect your own wallet, or a bot/channel peer you own/administrate. Returns {balance:{amount,nanos}, subscriptions?[], subscriptionsNextOffset?, subscriptionsMissingBalance?, history?[], nextOffset?}. Each transaction has id, stars, date, peer (kind: appStore|playMarket|premiumBot|fragment|ads|api|peer|unsupported), and flags (refund/pending/failed/gift/reaction). Use telegram-get-stars-transactions for full paginated history. Opt-in: register only when MCP_TELEGRAM_ENABLE_STARS=1. Read-only.",
+        "Fetch the current Telegram Stars balance and recent activity for a peer (payments.GetStarsStatus). Pass 'me' / '@me' (or the user's own id) to inspect your own wallet, or a bot/channel peer you own/administrate. Returns {balance:{amount,nanos} (or {amount,unit:'nanoton'} for native TON amounts), subscriptions?[], subscriptionsNextOffset?, subscriptionsMissingBalance?, history?[], nextOffset?}. Each transaction has id, stars, date, peer (kind: appStore|playMarket|premiumBot|fragment|ads|api|peer|unsupported), and flags (refund/pending/failed/gift/reaction). Use telegram-get-stars-transactions for full paginated history. Opt-in: register only when MCP_TELEGRAM_ENABLE_STARS=1. Read-only.",
       inputSchema: {
         peer: z
           .string()
@@ -182,7 +184,10 @@ export function registerStarsTools(server: McpServer, telegram: TelegramService)
         excludeUnsaved: z.boolean().optional().describe("Skip gifts the recipient chose to hide"),
         excludeSaved: z.boolean().optional().describe("Skip gifts the recipient chose to show"),
         excludeUnlimited: z.boolean().optional().describe("Skip unlimited-edition gifts"),
-        excludeLimited: z.boolean().optional().describe("Skip limited-edition gifts"),
+        excludeLimited: z
+          .boolean()
+          .optional()
+          .describe("Legacy option: layer 233 no longer supports this filter; true is rejected, false is accepted"),
         excludeUnique: z.boolean().optional().describe("Skip unique gifts"),
         sortByValue: z.boolean().optional().describe("Sort by Star value descending instead of date"),
       },

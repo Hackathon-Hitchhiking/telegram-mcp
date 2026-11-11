@@ -10,6 +10,7 @@ import {
   summarizeStarsTransactionPeer,
   TelegramService,
 } from "../telegram-client.js";
+import { CurrentApi } from "../tl/current-schema.js";
 import { isStarsEnabled } from "../tools/stars.js";
 
 interface Internals {
@@ -32,6 +33,10 @@ function makeService(invocations: unknown[], responder: (req: unknown) => unknow
 }
 
 describe("summarizeStarsAmount", () => {
+  it("preserves raw nanoton amounts beyond safe integer precision", () => {
+    const amount = new CurrentApi.StarsTonAmount({ amount: bigInt("9007199254740993") });
+    assert.deepStrictEqual(summarizeStarsAmount(amount), { amount: "9007199254740993", unit: "nanoton" });
+  });
   it("stringifies amount (bigInt) and passes nanos through", () => {
     const out = summarizeStarsAmount(new Api.StarsAmount({ amount: bigInt(12345), nanos: 67 }));
     assert.deepStrictEqual(out, { amount: "12345", nanos: 67 });
@@ -67,7 +72,7 @@ describe("summarizeStarsTransaction", () => {
   it("maps core fields and flags", () => {
     const tx = new Api.StarsTransaction({
       id: "tx-1",
-      stars: new Api.StarsAmount({ amount: bigInt(500), nanos: 0 }),
+      amount: new Api.StarsAmount({ amount: bigInt(500), nanos: 0 }),
       date: 1710000000,
       peer: new Api.StarsTransactionPeerAppStore(),
       refund: true,
@@ -122,7 +127,7 @@ describe("summarizeStarsStatus", () => {
       history: [
         new Api.StarsTransaction({
           id: "t1",
-          stars: new Api.StarsAmount({ amount: bigInt(10), nanos: 0 }),
+          amount: new Api.StarsAmount({ amount: bigInt(10), nanos: 0 }),
           date: 1,
           peer: new Api.StarsTransactionPeerPremiumBot(),
         }),

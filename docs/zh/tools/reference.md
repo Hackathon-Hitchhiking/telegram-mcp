@@ -1,6 +1,6 @@
 # 工具参考
 
-Telegram MCP Server 提供按类别组织的 182 个工具。所有工具通过 MCP 自动发现。
+Telegram MCP Server 提供按类别组织的 194 个工具。所有工具通过 MCP 自动发现。
 
 ## 认证
 
@@ -22,6 +22,44 @@ Telegram MCP Server 提供按类别组织的 182 个工具。所有工具通过 
 | `telegram-send-typing` | 发送"正在输入"/上传操作指示 |
 | `telegram-translate-message` | 翻译一条或多条消息（需 Premium；会消耗翻译配额） |
 | `telegram-get-message-link` | 获取消息的公开 t.me 链接 |
+
+## 原生 Rich Messages（本地扩展）
+
+以下七个工具使用个人账号发送 Telegram 原生富文本块，包括真正的表格。普通消息的 `parseMode: "md"` 用于文本格式；原生表格需要 rich 工具。
+
+| 工具 | 描述 |
+|------|-------------|
+| `telegram-preview-rich-message` | 本地编译 `markdown`，检查文本、表头/单元格和限制；不连接或发送 |
+| `telegram-rich-message-capabilities` | 查询协议层、账号 Premium 和服务器 `rich_message_posting` 模式 |
+| `telegram-send-rich-message` | 使用持久 UUID v4 `requestId` 发送原生富文本 |
+| `telegram-edit-rich-message` | 按精确 `chatId` / `messageId` 替换富文本内容 |
+| `telegram-save-rich-draft` | 保存原生富文本草稿，可指定回复/话题 |
+| `telegram-get-rich-message` | 读取指定消息的文本和表格，明确标注部分/不支持的内容 |
+| `telegram-get-rich-send-status` | 按 `requestId` 读取本地持久回执；不发送或重试 |
+
+先预览并查询能力。发送取决于服务器资格（通常需要 Premium）和聊天权限；安装成功并不证明可发送。编译器支持表格、标题、段落、平面列表/任务列表、引用、围栏代码、链接和行内样式；拒绝嵌套列表、脚注、数学表达式等不支持的语法。本地限制为 128 KiB UTF-8 源码、32,768 个渲染字符、500 个块、16 层嵌套及每表 20 列。服务器还会执行自身限制。不会自动改发普通文本。
+
+写入需要 `chatId`、`markdown` 和新的 UUID v4 `requestId`；编辑还需要 `messageId`。相同 ID 和相同负载返回已有回执；更改聊天、操作、内容或选项会被拒绝。回执保存在会话文件旁的 `rich-message-operations` 目录中。遇到 `submitting` 或 `uncertain`，应查询状态并读取精确消息/历史；不要删除回执或换新 ID 盲目重发。即时发送/编辑被接受后，会按精确 peer/ID 回读；`verified` 表示完整且受支持的文本、表格、显式链接、样式和规范化原生结构一致。读取还返回有界的 `semanticStructure` 以及 `semanticUnsupported` 诊断。定时发送仅保留确认 ID，不宣称已送达或立即验证。草稿只确认保存，不回读消息。发送选项有 `silent`、`protectContent`、`clearDraft`、`replyTo`、`topicId`、`scheduleDate`、`rtl`、`noautolink`；编辑支持后两项，草稿还支持回复/话题。
+
+## 精确读取与 API 目录（本地扩展）
+
+| 工具 | 描述 |
+|------|-------------|
+| `telegram-get-messages-by-id` | 按输入顺序读取同一聊天中 1–100 个不同 ID，并标注缺失/不可访问的 ID |
+| `telegram-get-history-page` | 从新到旧读取一页，支持 `offsetId`、`offsetDate`、有符号 `addOffset`、`minId`、`maxId`、`limit` |
+| `telegram-search-sent-media` | 跨聊天搜索近期发出的媒体，最多 100 条，不支持分页 |
+| `telegram-api-search` | 按名称、结果类型或字段检索已安装的 TL 方法/类型，支持有界分页 |
+| `telegram-api-describe` | 查看一个 TL 方法/构造器的字段、类型、可选标志位及返回类型 |
+
+这些读取不会标记消息已读。账号全局消息 ID 会按已解析的聊天过滤。历史 ID 边界不包含端点；`nextOffsetId` 为最后一条原生记录的 ID，只有空页才能确认结束。使用该游标继续时请重置 `addOffset`。媒体过滤器为 `photo`、`video`、`photoVideo`、`document`、`music`、`voice`、`gif`；服务器可能拒绝不支持的过滤器。输出文本有长度限制，不是完整导出。
+
+目录离线读取已安装的第 233 层协议，包含尚无专用 MCP 工具的字段。检索和描述**不能执行**任意 API，也不会授予权限。字段名采用 GramJS camelCase；标志指示字段由序列化器管理。
+
+## 普通文本格式与发送参数
+
+`telegram-send-message`、`telegram-edit-message`、`telegram-save-draft` 支持 `entities`、`noWebpage`、`invertMedia`；编辑/草稿也支持 `parseMode`。实体包含 `type`、`offset`、`length`，`text_url` 可带 `url`，`pre` 可带 `language`。类型包括 `bold`、`italic`、`underline`、`strike`、`spoiler`、`code`、`pre`、`text_url`。范围按未解析文本的 UTF-16 代码单元计算，不能拆分代理对；最多 100 个实体。`entities` 与 `parseMode` 互斥。链接协议仅允许 http、https、mailto、tg。
+
+发送还支持 `silent`、`background`、`clearDraft`、`protectContent`（MTProto `noforwards`）、`scheduleDate`、`scheduleRepeatPeriod`、`sendAs`、`replyToPeer`、`quoteOffset`，以及 `quoteText`、`effect`、`replyTo`、`topicId`。时间使用未来 Unix 秒数；重复发送需要 `scheduleDate`。`replyToPeer` 需要 `replyTo`；`quoteOffset` 需要 `quoteText` 和 `replyTo`。权限、Premium 特效和重复定时资格由服务器决定。普通写入不提供持久 rich `requestId` 回执。
 
 ## 定时消息
 

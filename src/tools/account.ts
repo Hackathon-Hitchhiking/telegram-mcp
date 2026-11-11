@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { textFormattingFields } from "../message-options.js";
 import type { TelegramService } from "../telegram-client.js";
 import { checkReadablePath } from "./file-access.js";
 import {
@@ -330,15 +331,18 @@ export function registerAccountTools(server: McpServer, telegram: TelegramServic
         chatId: z.string().describe("Chat ID or username"),
         text: z.string().describe("Draft text. Empty string clears the draft"),
         replyTo: z.number().int().positive().optional().describe("Message ID this draft replies to"),
+        parseMode: z.enum(["md", "html"]).optional(),
+        ...textFormattingFields,
       },
       annotations: WRITE,
     },
-    async ({ chatId, text, replyTo }) => {
+    async ({ chatId, text, replyTo, ...options }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
       try {
-        await telegram.saveDraft(chatId, text, replyTo);
+        const hasOptions = Object.values(options).some((value) => value !== undefined);
+        await telegram.saveDraft(chatId, text, replyTo, ...(hasOptions ? [options] : []));
         return ok(text === "" ? `Draft cleared for ${chatId}` : `Draft saved for ${chatId}`);
       } catch (e) {
         return fail(e);

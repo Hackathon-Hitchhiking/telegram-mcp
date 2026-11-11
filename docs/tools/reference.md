@@ -1,6 +1,6 @@
 # Tools Reference
 
-Telegram MCP Server provides 182 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
+Telegram MCP Server provides 194 tools organized by category. All tools are auto-discoverable — your AI client will see them with full parameter descriptions when connected.
 
 ## Auth
 
@@ -22,6 +22,44 @@ Telegram MCP Server provides 182 tools organized by category. All tools are auto
 | `telegram-send-typing` | Send a typing / upload action indicator |
 | `telegram-translate-message` | Translate one or more messages to a target language (Premium; consumes translate quota) |
 | `telegram-get-message-link` | Get a public t.me link to a message |
+
+## Native Rich Messages (local extension)
+
+These seven tools use the personal account and native Telegram rich blocks, including real tables. `parseMode: "md"` on an ordinary message formats text; use the rich tools for a native table.
+
+| Tool | Description |
+|------|-------------|
+| `telegram-preview-rich-message` | Compile `markdown` locally and inspect text, table headers/cells and limits; no connection or send |
+| `telegram-rich-message-capabilities` | Read schema layer, account Premium and server `rich_message_posting` mode |
+| `telegram-send-rich-message` | Send native rich blocks with a durable UUID v4 `requestId` |
+| `telegram-edit-rich-message` | Replace rich content of an exact `chatId` / `messageId` |
+| `telegram-save-rich-draft` | Save native rich blocks as a draft, with optional reply/topic |
+| `telegram-get-rich-message` | Read one exact message and inspect rich text and tables; report partial/unsupported content |
+| `telegram-get-rich-send-status` | Read the local durable receipt by `requestId`; never send or retry |
+
+Start with preview and capabilities. Sending requires server eligibility (normally Premium) and chat permissions; installation alone does not establish eligibility. The compiler supports tables, headings, paragraphs, flat lists/checklists, quotes, fenced code, links and inline styles. It rejects unsupported constructs such as nested lists, footnotes and mathematical expressions. Local limits are 128 KiB UTF-8 source, 32,768 rendered characters, 500 blocks, 16 nesting levels and 20 table columns. These are compiler bounds; Telegram enforces its own limits too. No automatic plain-text fallback is sent.
+
+Writes require `chatId`, `markdown` and a fresh UUID v4 `requestId`; edits also require `messageId`. Reusing an ID with the same payload returns the stored receipt; changing the chat, operation, content or options is rejected. Receipts live in `rich-message-operations` beside the session file. A `submitting` or `uncertain` state must be reconciled using the status tool and exact message/history reads. Do not delete its receipt or create a new ID to blindly resend. Immediate accepted sends/edits attempt exact peer/ID readback; `verified` means complete supported text, tables, explicit links, styles and normalized native structure matched. Reads also return a bounded normalized `semanticStructure` and diagnostic `semanticUnsupported` constructor names. Scheduled acknowledgements preserve the known ID without claiming delivery or immediate verification. Drafts are acknowledged without message readback. Send options include `silent`, `protectContent`, `clearDraft`, `replyTo`, `topicId`, `scheduleDate`, `rtl` and `noautolink`; edit supports the last two, and draft additionally supports reply/topic.
+
+## Exact reading and API discovery (local extension)
+
+| Tool | Description |
+|------|-------------|
+| `telegram-get-messages-by-id` | Read 1–100 distinct IDs from one exact chat, in requested order; missing/inaccessible IDs are labelled |
+| `telegram-get-history-page` | Read one native newest-first page with `offsetId`, `offsetDate`, signed `addOffset`, `minId`, `maxId` and `limit` |
+| `telegram-search-sent-media` | Search recent sent media across chats by query/filter; up to 100 results, no pagination |
+| `telegram-api-search` | Search installed TL methods/types by name, result or field; bounded, paginated schema reference |
+| `telegram-api-describe` | Describe one TL method/constructor, fields, types, optional flag bits and result type |
+
+These reads do not mark messages read. Account-global message IDs are filtered to the resolved chat. History ID bounds are exclusive; `nextOffsetId` is the last native row, and only an empty page establishes the end. Reset `addOffset` when continuing with that cursor. Sent-media filters are `photo`, `video`, `photoVideo`, `document`, `music`, `voice`, `gif`; Telegram may reject unsupported filters. Message text projections are bounded, not complete exports.
+
+API search/describe use the installed layer-233 schema without connecting. They document protocol capabilities, including fields not exposed by dedicated MCP tools. Discovery does **not** execute arbitrary methods or grant permissions. Field names use GramJS camelCase; flag indicators are serializer-managed.
+
+## Ordinary text formatting and send options
+
+`telegram-send-message`, `telegram-edit-message` and `telegram-save-draft` accept explicit `entities`, `noWebpage` and `invertMedia`; edit/draft also accept `parseMode`. Each entity has `type`, `offset`, `length`, with optional `url` for `text_url` or `language` for `pre`. Types: `bold`, `italic`, `underline`, `strike`, `spoiler`, `code`, `pre`, `text_url`. Offsets and lengths count UTF-16 code units in unparsed text; ranges cannot split surrogate pairs. At most 100 entities are accepted. `entities` and `parseMode` are mutually exclusive. Link schemes are restricted to http, https, mailto and tg.
+
+Send additionally supports `silent`, `background`, `clearDraft`, `protectContent` (MTProto `noforwards`), `scheduleDate`, `scheduleRepeatPeriod`, `sendAs`, `replyToPeer` and `quoteOffset`, alongside `quoteText`, `effect`, `replyTo` and `topicId`. Scheduling uses future Unix seconds; repeat periods require `scheduleDate`. `replyToPeer` requires `replyTo`; `quoteOffset` requires both `quoteText` and `replyTo`. Permissions, Premium effects and repeat scheduling remain server-controlled. Ordinary writes have no durable rich `requestId` receipt.
 
 ## Scheduled
 

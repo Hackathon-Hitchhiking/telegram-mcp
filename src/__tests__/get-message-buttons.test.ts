@@ -1,8 +1,10 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import bigInt from "big-integer";
+import { BinaryReader } from "telegram/extensions/BinaryReader.js";
 import { Api } from "telegram/tl/index.js";
 import { TelegramService } from "../telegram-client.js";
+import { CurrentApi, type CurrentInlineButton } from "../tl/current-schema.js";
 
 interface Internals {
   client: unknown;
@@ -43,10 +45,11 @@ function makeMessage(id: number, markup?: Api.TypeReplyMarkup): Api.Message {
   });
 }
 
-function inlineMarkup(buttons: Api.TypeKeyboardButton[][]): Api.ReplyInlineMarkup {
-  return new Api.ReplyInlineMarkup({
-    rows: buttons.map((row) => new Api.KeyboardButtonRow({ buttons: row })),
+function inlineMarkup(buttons: CurrentInlineButton[][]): Api.ReplyInlineMarkup {
+  const markup = new Api.ReplyInlineMarkup({
+    rows: buttons.map((row) => new CurrentApi.KeyboardInlineButtonRow({ buttons: row })),
   });
+  return new BinaryReader(markup.getBytes()).tgReadObject() as Api.ReplyInlineMarkup;
 }
 
 describe("TelegramService.getMessageButtons", () => {
@@ -62,7 +65,14 @@ describe("TelegramService.getMessageButtons", () => {
     const data = Buffer.from("vote_yes");
     const msg = makeMessage(
       42,
-      inlineMarkup([[new Api.KeyboardButtonCallback({ text: "Yes", data, requiresPassword: false })]]),
+      inlineMarkup([
+        [
+          new CurrentApi.KeyboardInlineButton({
+            text: "Yes",
+            type: new CurrentApi.InlineButtonTypeCallback({ data, requiresPassword: false }),
+          }),
+        ],
+      ]),
     );
     const service = makeService(makeChannel(100), [msg]);
 
@@ -72,7 +82,7 @@ describe("TelegramService.getMessageButtons", () => {
     const b = res.buttons[0];
     assert.strictEqual(b.row, 0);
     assert.strictEqual(b.col, 0);
-    assert.strictEqual(b.type, "KeyboardButtonCallback");
+    assert.strictEqual(b.type, "KeyboardInlineButton");
     assert.strictEqual(b.label, "Yes");
     assert.ok(b.data, "data is set");
     assert.strictEqual(Buffer.from(b.data as string, "base64").toString(), "vote_yes");
@@ -83,7 +93,12 @@ describe("TelegramService.getMessageButtons", () => {
     const msg = makeMessage(
       1,
       inlineMarkup([
-        [new Api.KeyboardButtonCallback({ text: "Admin", data: Buffer.from("x"), requiresPassword: true })],
+        [
+          new CurrentApi.KeyboardInlineButton({
+            text: "Admin",
+            type: new CurrentApi.InlineButtonTypeCallback({ data: Buffer.from("x"), requiresPassword: true }),
+          }),
+        ],
       ]),
     );
     const service = makeService(makeChannel(100), [msg]);
@@ -96,10 +111,21 @@ describe("TelegramService.getMessageButtons", () => {
       2,
       inlineMarkup([
         [
-          new Api.KeyboardButtonUrl({ text: "Open", url: "https://x.test" }),
-          new Api.KeyboardButtonSwitchInline({ text: "Inline", query: "q", samePeer: true }),
+          new CurrentApi.KeyboardInlineButton({
+            text: "Open",
+            type: new CurrentApi.InlineButtonTypeUrl({ url: "https://x.test" }),
+          }),
+          new CurrentApi.KeyboardInlineButton({
+            text: "Inline",
+            type: new CurrentApi.InlineButtonTypeSwitchInline({ query: "q", samePeer: true }),
+          }),
         ],
-        [new Api.KeyboardButtonCopy({ text: "Copy", copyText: "abc" })],
+        [
+          new CurrentApi.KeyboardInlineButton({
+            text: "Copy",
+            type: new CurrentApi.InlineButtonTypeCopy({ copyText: "abc" }),
+          }),
+        ],
       ]),
     );
     const service = makeService(makeChannel(100), [msg]);
@@ -107,26 +133,53 @@ describe("TelegramService.getMessageButtons", () => {
     assert.strictEqual(res.buttons.length, 3);
 
     const [urlB, inlineB, copyB] = res.buttons;
-    assert.strictEqual(urlB.type, "KeyboardButtonUrl");
+    assert.strictEqual(urlB.actionType, "InlineButtonTypeUrl");
     assert.strictEqual(urlB.url, "https://x.test");
     assert.strictEqual(urlB.row, 0);
     assert.strictEqual(urlB.col, 0);
 
-    assert.strictEqual(inlineB.type, "KeyboardButtonSwitchInline");
+    assert.strictEqual(inlineB.actionType, "InlineButtonTypeSwitchInline");
     assert.strictEqual(inlineB.switchQuery, "q");
     assert.strictEqual(inlineB.samePeer, true);
     assert.strictEqual(inlineB.row, 0);
     assert.strictEqual(inlineB.col, 1);
 
-    assert.strictEqual(copyB.type, "KeyboardButtonCopy");
+    assert.strictEqual(copyB.actionType, "InlineButtonTypeCopy");
     assert.strictEqual(copyB.copyText, "abc");
     assert.strictEqual(copyB.row, 1);
     assert.strictEqual(copyB.col, 0);
   });
 
+  it("describes serialized layer 233 disabled buttons and style", async () => {
+    const msg = makeMessage(
+      5,
+      inlineMarkup([
+        [
+          new CurrentApi.KeyboardInlineButton({
+            text: "Unavailable",
+            type: new CurrentApi.InlineButtonTypeDisabled(),
+            style: new CurrentApi.KeyboardButtonStyle({ bgDanger: true, icon: bigInt(123) }),
+          }),
+        ],
+      ]),
+    );
+    const result = await makeService(makeChannel(100), [msg]).getMessageButtons("100", 5);
+    assert.strictEqual(result.buttons[0].actionType, "InlineButtonTypeDisabled");
+    assert.deepStrictEqual(result.buttons[0].style, {
+      primary: undefined,
+      danger: true,
+      success: undefined,
+      icon: "123",
+    });
+  });
+
   it("preserves markupType for non-inline reply keyboards with buttons", async () => {
     const markup = new Api.ReplyKeyboardMarkup({
-      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButton({ text: "x" })] })],
+      rows: [
+        new Api.KeyboardButtonRow({
+          buttons: [new CurrentApi.KeyboardButton({ text: "x", type: new CurrentApi.ButtonTypeDefault() })],
+        }),
+      ],
     });
     const msg = makeMessage(3, markup);
     const service = makeService(makeChannel(100), [msg]);

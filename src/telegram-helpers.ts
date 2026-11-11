@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
 import bigInt from "big-integer";
 import { Api } from "telegram/tl/index.js";
+import {
+  CurrentApi,
+  type CurrentInlineButton,
+  type CurrentRegularButton,
+  type CurrentStarsTonAmount,
+} from "./tl/current-schema.js";
 import type { SavedMusicResponse } from "./tl/saved-music.js";
 import { type InstantViewSummary, summarizeInstantView } from "./webpage-preview.js";
 
@@ -412,10 +418,12 @@ export type MessageButtonDescriptor = {
   copyText?: string;
   requiresPassword?: boolean;
   quiz?: boolean;
+  actionType?: string;
+  style?: { primary?: boolean; danger?: boolean; success?: boolean; icon?: string };
 };
 
 export function describeKeyboardButton(
-  button: Api.TypeKeyboardButton,
+  button: Api.TypeKeyboardButton | CurrentInlineButton | CurrentRegularButton,
   row: number,
   col: number,
 ): MessageButtonDescriptor {
@@ -425,44 +433,43 @@ export function describeKeyboardButton(
     type: button.className,
     label: "text" in button && typeof (button as { text?: unknown }).text === "string" ? button.text : "",
   };
-  if (button instanceof Api.KeyboardButtonCallback) {
-    base.data = Buffer.from(button.data as Uint8Array).toString("base64");
-    if (button.requiresPassword) base.requiresPassword = true;
+  if (!(button instanceof CurrentApi.KeyboardInlineButton) && !(button instanceof CurrentApi.KeyboardButton)) {
     return base;
   }
-  if (button instanceof Api.KeyboardButtonUrl) {
-    base.url = button.url;
-    return base;
+  const action = button.type;
+  if (!action) return base;
+  base.actionType = action.className;
+  if (button.style) {
+    base.style = {
+      primary: button.style.bgPrimary || undefined,
+      danger: button.style.bgDanger || undefined,
+      success: button.style.bgSuccess || undefined,
+      icon: button.style.icon?.toString(),
+    };
   }
-  if (button instanceof Api.KeyboardButtonUrlAuth) {
-    base.url = button.url;
-    base.buttonId = button.buttonId;
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonSwitchInline) {
-    base.switchQuery = button.query;
-    base.samePeer = Boolean(button.samePeer);
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonWebView || button instanceof Api.KeyboardButtonSimpleWebView) {
-    base.url = button.url;
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonUserProfile) {
-    base.userId = button.userId?.toString();
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonRequestPoll) {
-    if (button.quiz) base.quiz = true;
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonRequestPeer) {
-    base.buttonId = button.buttonId;
-    return base;
-  }
-  if (button instanceof Api.KeyboardButtonCopy) {
-    base.copyText = button.copyText;
-    return base;
+  if (action instanceof CurrentApi.InlineButtonTypeCallback) {
+    base.data = Buffer.from(action.data).toString("base64");
+    if (action.requiresPassword) base.requiresPassword = true;
+  } else if (action instanceof CurrentApi.InlineButtonTypeUrlAuth) {
+    base.url = action.url;
+    base.buttonId = action.buttonId;
+  } else if (
+    action instanceof CurrentApi.InlineButtonTypeUrl ||
+    action instanceof CurrentApi.InlineButtonTypeWebView ||
+    action instanceof CurrentApi.ButtonTypeSimpleWebView
+  ) {
+    base.url = action.url;
+  } else if (action instanceof CurrentApi.InlineButtonTypeSwitchInline) {
+    base.switchQuery = action.query;
+    base.samePeer = Boolean(action.samePeer);
+  } else if (action instanceof CurrentApi.InlineButtonTypeUserProfile) {
+    base.userId = action.userId.toString();
+  } else if (action instanceof CurrentApi.ButtonTypeRequestPoll) {
+    if ("quiz" in action && action.quiz) base.quiz = true;
+  } else if (action instanceof CurrentApi.ButtonTypeRequestPeer) {
+    base.buttonId = action.buttonId;
+  } else if (action instanceof CurrentApi.InlineButtonTypeCopy) {
+    base.copyText = action.copyText;
   }
   return base;
 }
@@ -1094,10 +1101,13 @@ export function summarizeGroupCallParticipants(result: Api.phone.TypeGroupPartic
   };
 }
 
-export type StarsAmountSummary = {
-  amount: string;
-  nanos: number;
-};
+export type StarsAmountSummary =
+  | {
+      amount: string;
+      nanos: number;
+      unit?: never;
+    }
+  | { amount: string; unit: "nanoton"; nanos?: never };
 
 export type StarsTransactionPeerSummary =
   | { kind: "appStore" }
@@ -1156,7 +1166,8 @@ export type StarsStatusSummary = {
   nextOffset?: string;
 };
 
-export function summarizeStarsAmount(amount: Api.TypeStarsAmount): StarsAmountSummary {
+export function summarizeStarsAmount(amount: Api.TypeStarsAmount | CurrentStarsTonAmount): StarsAmountSummary {
+  if (amount instanceof CurrentApi.StarsTonAmount) return { amount: amount.amount.toString(), unit: "nanoton" };
   const a = amount as Api.StarsAmount;
   return { amount: a.amount.toString(), nanos: a.nanos };
 }
@@ -1173,10 +1184,10 @@ export function summarizeStarsTransactionPeer(peer: Api.TypeStarsTransactionPeer
 }
 
 export function summarizeStarsTransaction(tx: Api.TypeStarsTransaction): StarsTransactionSummary {
-  const t = tx as Api.StarsTransaction;
+  const t = tx as unknown as Omit<Api.StarsTransaction, "stars"> & { amount: Api.TypeStarsAmount };
   return {
     id: t.id,
-    stars: summarizeStarsAmount(t.stars),
+    stars: summarizeStarsAmount(t.amount),
     date: t.date,
     peer: summarizeStarsTransactionPeer(t.peer),
     refund: t.refund,

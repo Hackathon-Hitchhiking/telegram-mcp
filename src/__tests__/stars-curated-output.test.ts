@@ -73,6 +73,16 @@ describe("Stars tools — curated text output (Tier 1 token optimization)", () =
     assert.match(text, /nextOffset=cur1/);
   });
 
+  it("renders native TON amounts with an explicit nanoton unit", async () => {
+    const telegram = {
+      ensureConnected: async () => true,
+      getStarsStatus: async () => ({ balance: { amount: "9007199254740993", unit: "nanoton" } }),
+    } as unknown as TelegramService;
+    const handler = captureHandlers(telegram).get("telegram-get-stars-status");
+    assert.ok(handler);
+    assert.equal(textOf(await handler({ peer: "me" })), "balance=9007199254740993 nanoton");
+  });
+
   it("get-stars-status handles an empty wallet (no history)", async () => {
     const telegram = {
       ensureConnected: async () => true,
