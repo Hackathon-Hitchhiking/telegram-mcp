@@ -166,9 +166,13 @@ Send additionally supports `silent`, `background`, `clearDraft`, `protectContent
 | Tool | Description |
 | ------ | ------------- |
 | `telegram-send-file` | Send a file, photo, or document |
-| `telegram-download-media` | Download media from a message |
+| `telegram-download-media` | Return attachment bytes to the MCP client or save them on the MCP server |
 | `telegram-get-profile-photo` | Get a user's or chat's profile photo |
 | `telegram-get-web-preview` | Preview a URL's title/description/site before sending |
+
+Call `telegram-download-media` with `chatId` and `messageId` to receive the full attachment in the MCP response, up to 6 MiB before base64 encoding. GIF, JPEG, PNG, and WebP use `image` content (`data`). PDFs and other attachments use a binary embedded resource (`resource.blob`). The response includes `fileName`, `mimeType`, `sizeBytes`, and `sha256` in `structuredContent`. Decode the base64 field to save the bytes on the client.
+
+An explicit `downloadPath` selects server-side saving. The directory must exist and be writable on the MCP server, and the tool reports the server path. Use this mode for larger attachments when you can access the server's filesystem.
 
 ## Rich Media Sending (v1.29.0)
 

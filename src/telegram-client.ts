@@ -1310,15 +1310,8 @@ export class TelegramService {
   }
 
   async downloadMedia(chatId: string, messageId: number, downloadPath: string): Promise<string> {
-    if (!this.client || !this.connected) throw new Error(NOT_CONNECTED_ERROR);
-    const resolved = await this.resolvePeer(chatId);
-    const messages = await this.client.getMessages(resolved, { ids: [messageId] });
-    const message = messages[0];
-    if (!message) throw new Error(`Message ${messageId} not found`);
-    if (!message.media) throw new Error(`Message ${messageId} has no media`);
-    const buffer = await this.client.downloadMedia(message);
-    if (!buffer) throw new Error("Failed to download media");
-    await writeFile(downloadPath, buffer as Buffer);
+    const { buffer } = await this.downloadMediaAsBuffer(chatId, messageId);
+    await writeFile(downloadPath, buffer);
     return downloadPath;
   }
 
@@ -1409,6 +1402,7 @@ export class TelegramService {
   /** Detect MIME type from buffer magic bytes, falling back to media metadata */
   private detectMimeType(buffer: Buffer, media: unknown): string {
     // Check magic bytes first
+    if (buffer.subarray(0, 5).toString("latin1") === "%PDF-") return "application/pdf";
     if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
     if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
     if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return "image/gif";

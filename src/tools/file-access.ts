@@ -193,8 +193,11 @@ export async function prepareWritablePath(path: string, _credentialFiles: string
   let dir: string;
   try {
     dir = await realpath(dirname(path));
-  } catch {
-    throw new Error(`Folder does not exist: ${dirname(path)}`);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") throw new Error(`Folder does not exist: ${dirname(path)}`);
+    if (code === "ENOTDIR") throw new Error(`Not a folder: ${dirname(path)}`);
+    throw e;
   }
   const roots = writeRoots();
   const first = join(dir, name);

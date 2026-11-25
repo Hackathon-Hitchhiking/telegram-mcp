@@ -1,8 +1,18 @@
+import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TelegramService } from "../telegram-client.js";
 import { checkReadablePath, prepareWritablePath, releaseReservedPath } from "./file-access.js";
-import { fail, ok, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
+import { fail, ok, oneLine, READ_ONLY, requireConnection, sanitize, WRITE } from "./shared.js";
+
+// Base64 expands 6 MiB to 8 MiB, leaving room below the gateway's 10 MiB frame limit.
+const MAX_INLINE_MEDIA_BYTES = 6 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Map([
+  ["image/gif", "gif"],
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/webp", "webp"],
+]);
 
 export function registerMediaTools(server: McpServer, telegram: TelegramService) {
   server.registerTool(
@@ -40,29 +50,66 @@ export function registerMediaTools(server: McpServer, telegram: TelegramService)
   server.registerTool(
     "telegram-download-media",
     {
-      description: "Download media from a Telegram message to a local file",
+      description:
+        "Return a Telegram message attachment to the MCP client (up to 6 MiB), or save it on the MCP server if downloadPath is supplied",
       inputSchema: {
         chatId: z.string().describe("Chat ID or username"),
         messageId: z.number().describe("Message ID containing media"),
         downloadPath: z
           .string()
+          .optional()
           .describe(
-            "Absolute path to save the file, in Downloads, Desktop, Documents or a temp folder. An existing file is kept; a numbered name is used instead",
+            "Optional absolute path on the MCP server (Downloads, Desktop, Documents or a temp folder). An existing file is kept; a numbered name is used instead. Omit to receive the bytes in the MCP response",
           ),
       },
       annotations: READ_ONLY,
     },
-    async ({ chatId, messageId, downloadPath }) => {
+    async ({ chatId, messageId, downloadPath }, { signal }) => {
       const err = await requireConnection(telegram);
       if (err) return fail(new Error(err));
 
-      let target: string | undefined;
+      if (downloadPath !== undefined) {
+        let target: string | undefined;
+        try {
+          target = await prepareWritablePath(downloadPath, telegram.credentialFiles);
+          const path = await telegram.downloadMedia(chatId, messageId, target);
+          return ok(
+            `Media saved on the MCP server at ${path}. Omit downloadPath to return attachments up to 6 MiB in the MCP response.`,
+          );
+        } catch (e) {
+          if (target) await releaseReservedPath(target);
+          return fail(`Could not save media on the MCP server: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
       try {
-        target = await prepareWritablePath(downloadPath, telegram.credentialFiles);
-        const path = await telegram.downloadMedia(chatId, messageId, target);
-        return ok(`Media downloaded to ${path}`);
+        const { buffer, mimeType, fileName } = await telegram.downloadMediaBounded(chatId, messageId, {
+          maxBytes: MAX_INLINE_MEDIA_BYTES,
+          signal,
+        });
+        const imageExtension = IMAGE_EXTENSIONS.get(mimeType);
+        const originalName = sanitize(oneLine(fileName?.split(/[\\/]/).at(-1) ?? "").replaceAll("\0", ""));
+        const extension = imageExtension ?? (mimeType === "application/pdf" ? "pdf" : "bin");
+        const name =
+          originalName && !originalName.startsWith(".") ? originalName : `telegram-${messageId}.${extension}`;
+        const sha256 = createHash("sha256").update(buffer).digest("hex");
+        const data = buffer.toString("base64");
+        const summary = ok(
+          `Attachment: ${name}\nMIME type: ${mimeType}\nSize: ${buffer.length} bytes\nSHA-256: ${sha256}`,
+        );
+        return {
+          content: [
+            ...summary.content,
+            imageExtension
+              ? { type: "image" as const, mimeType, data }
+              : {
+                  type: "resource" as const,
+                  resource: { uri: `telegram-media://attachment/${sha256}`, mimeType, blob: data },
+                },
+          ],
+          structuredContent: { fileName: name, mimeType, sizeBytes: buffer.length, sha256 },
+        };
       } catch (e) {
-        if (target) await releaseReservedPath(target);
         return fail(e);
       }
     },
